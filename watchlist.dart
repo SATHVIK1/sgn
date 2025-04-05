@@ -1,126 +1,99 @@
+import 'dart:async';
 import 'dart:typed_data';
-
+import 'package:appwrite/appwrite.dart';
+import 'package:appwrite/models.dart';
 import 'package:flutter/material.dart';
 import 'package:sgnetflix/data/entry.dart';
-import 'package:sgnetflix/providers/entry.dart';
 
-import 'package:provider/provider.dart';
+import '../api/client.dart';
 
-import '../providers/watchlist.dart';
-import '../widgets/buttons/icon.dart';
-import 'details.dart';
+const String databaseId = '67efddf200075d433445'; // Replace with actual value
+const String bucketId = '67effc5700179a38e657';     // Replace with actual value
 
-class WatchlistScreen extends StatefulWidget {
-  const WatchlistScreen({Key? key}) : super(key: key);
+class WatchListProvider extends ChangeNotifier {
+  final String _collectionId = "watchlists";
 
-  @override
-  _WatchlistScreenState createState() => _WatchlistScreenState();
-}
+  List<Entry> _entries = [];
+  List<Entry> get entries => _entries;
 
-class _WatchlistScreenState extends State<WatchlistScreen> {
-  @override
-  void initState() {
-    super.initState();
+  Future<User> get user async {
+    return await ApiClient.account.get();
   }
 
-  @override
-  void dispose() {
-    super.dispose();
+  Future<List<Entry>> list() async {
+    final user = await this.user;
+
+    final watchlist = await ApiClient.database.listDocuments(
+      databaseId: databaseId,
+      collectionId: _collectionId,
+    );
+
+    final movieIds = watchlist.documents
+        .map((document) => document.data["movieId"])
+        .toList();
+
+    final entries = (await ApiClient.database.listDocuments(
+      databaseId: databaseId,
+      collectionId: 'movies',
+    ))
+        .documents
+        .map((document) => Entry.fromJson(document.data))
+        .toList();
+
+    final filtered =
+    entries.where((entry) => movieIds.contains(entry.id)).toList();
+
+    _entries = filtered;
+    notifyListeners();
+    return _entries;
   }
 
-  Widget _row(Entry entry) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.start,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        FutureBuilder<Uint8List>(
-          future: context.read<EntryProvider>().imageFor(entry),
-          builder: (context, snapshot) =>
-          snapshot.hasData && snapshot.data != null
-              ? Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              image: DecorationImage(
-                fit: BoxFit.contain,
-                image: Image.memory(snapshot.data!).image,
-              ),
-            ),
-          )
-              : Container(),
-        ),
-        const SizedBox(
-          width: 10,
-        ),
-        Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  entry.name,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  (entry.description ?? "").substring(0, 50) + "...",
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            )),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 30, 20),
-          child: VerticalIconButton(
-              icon: Icons.delete,
-              title: '',
-              tap: () {
-                context.read<WatchListProvider>().remove(entry);
-              }),
-        ),
+  Future<void> add(Entry entry) async {
+    final user = await this.user;
+
+    await ApiClient.database.createDocument(
+      databaseId: databaseId,
+      collectionId: _collectionId,
+      documentId: 'unique()',
+      data: {
+        "userId": user.$id,
+        "movieId": entry.id,
+        "createdAt": (DateTime.now().second / 1000).round()
+      },
+    );
+
+    await list();
+  }
+
+  Future<void> remove(Entry entry) async {
+    final user = await this.user;
+
+    final result = await ApiClient.database.listDocuments(
+      databaseId: databaseId,
+      collectionId: _collectionId,
+      queries: [
+        Query.equal("userId", user.$id),
+        Query.equal("movieId", entry.id)
       ],
+    );
+
+    final id = result.documents.first.$id;
+
+    await ApiClient.database.deleteDocument(
+      databaseId: databaseId,
+      collectionId: _collectionId,
+      documentId: id,
+    );
+
+    await list();
+  }
+
+  Future<Uint8List> imageFor(Entry entry) async {
+    return await ApiClient.storage.getFileView(
+      bucketId: bucketId,
+      fileId: entry.thumbnailImageId,
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          title: const Text('Watchlist'),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: () {
-                Navigator.pop(context);
-              },
-            ),
-          ],
-        ),
-        body: FutureBuilder<List<Entry>>(
-            future: context.read<WatchListProvider>().list(),
-            builder: (context, snapshot) {
-              return snapshot.hasData == false || snapshot.data == null
-                  ? const Padding(
-                  padding: EdgeInsets.all(60),
-                  child: Center(child: CircularProgressIndicator()))
-                  : ListView(
-                children: snapshot.data!
-                    .map((entry) => GestureDetector(
-                    child: _row(entry),
-                    onTap: () async {
-                      await showDialog(
-                          context: context,
-                          builder: (context) =>
-                              DetailsScreen(entry: entry));
-                    }))
-                    .toList(),
-              );
-            }));
-  }
+  bool isOnList(Entry entry) => _entries.any((e) => e.id == entry.id);
 }
